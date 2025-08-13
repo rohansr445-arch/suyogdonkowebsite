@@ -1,0 +1,30 @@
+body{
+    background-color: rgb(0, 221, 255);
+background-image: url(https://images.pexels.com/photos/1111367/pexels-photo-1111367.jpeg);
+background-repeat: no-repeat ;
+background-size: cover;
+}
+
+h1{
+color:rgb(255, 0, 0);
+margin-left:20px
+}
+
+.box-link {
+    display: inline-block;
+    padding: 10px 20px;
+    border: 2px solid black;
+    border-radius: 10px;
+    background-color: lightblue;
+    color: black;
+    text-decoration: none;
+    font-weight: bold;
+    font-family: Arial, sans-serif;
+    transition: 0.3s;
+}
+
+.box-link:hover {
+    background-color: dodgerblue;
+    color: white;
+    border-color: navy;
+}
