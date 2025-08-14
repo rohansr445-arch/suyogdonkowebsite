@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mini Dash — Standalone</title>
+  <style>
+    :root {
+      --bg: #0f1226;
+      --fg: #e6e8ff;
+      --accent: #7c5cff;
+      --accent-2: #24d3ee;
+      --danger: #ff3b6b;
+    }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: radial-gradient(1200px 600px at 20% 10%, #1b2048 0%, var(--bg) 60%) fixed;
+      color: var(--fg);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+      overflow: hidden;
+      user-select: none;
+    }
+    /* Frame */
+    .wrap {
+      position: fixed; inset: 0; display: grid; place-items: center;
+      padding: 12px;
+    }
+    .game {
+      width: min(900px, 96vw);
+      height: min(520px, 65vh);
+      aspect-ratio: 16/9;
+      background: linear-gradient(180deg, #14183a 0%, #0c0f25 100%);
+      border-radius: 20px;
+      box-shadow: 0 20px 50px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.06);
+      position: relative;
+      overflow: hidden;
+    }
+    canvas { width: 100%; height: 100%; display: block; }
+
+    /* HUD */
+    .hud { position: absolute; inset: 0; pointer-events: none; }
+    .score {
+      position: absolute; top: 10px; left: 14px;
+      font-weight: 800; letter-spacing: .5px; font-size: clamp(16px, 2.2vw, 22px);
+      text-shadow: 0 2px 8px rgba(0,0,0,.4);
+      background: rgba(0,0,0,.25);
+      padding: 6px 10px; border-radius: 10px; backdrop-filter: blur(2px);
+    }
+    .score small { opacity: .8; font-weight: 600; }
+    .topright { right: 14px; left: auto; }
+
+    /* Center overlays */
+    .overlay { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; }
+    .card {
+      pointer-events: auto;
+      background: rgba(12, 15, 37, .78);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 18px; padding: 18px 22px;
+      box-shadow: 0 12px 40px rgba(0,0,0,.45);
+      max-width: 86%;
+      animation: pop .2s ease-out;
+    }
+    @keyframes pop { from { transform: scale(.96); opacity: .6 } }
+    h1 { margin: 8px 0 6px; font-size: clamp(22px, 4vw, 36px); }
+    p { margin: 6px 0 0; opacity: .9 }
+    .btns { display:flex; flex-wrap:wrap; gap:10px; justify-content:center; margin-top:14px }
+    button {
+      pointer-events: auto;
+      appearance: none; border: 0; cursor: pointer;
+      padding: 10px 14px; border-radius: 12px; font-weight: 700;
+      background: linear-gradient(180deg, var(--accent), #5b3bff);
+      color: white; box-shadow: 0 10px 25px rgba(124,92,255,.35);
+      transition: transform .06s ease;
+    }
+    button:active { transform: translateY(1px) }
+    .ghost { background: rgba(255,255,255,.08); color: var(--fg); box-shadow: none; border: 1px solid rgba(255,255,255,.12) }
+    .danger { background: linear-gradient(180deg, var(--danger), #e21e51); box-shadow: 0 10px 25px rgba(255,59,107,.35) }
+
+    /* Tiny footer help */
+    .help { position: absolute; bottom: 10px; left: 14px; opacity: .8; font-size: 12px }
+    .help kbd { background: rgba(255,255,255,.1); border:1px solid rgba(255,255,255,.12); padding: 2px 6px; border-radius:6px }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="game" id="game">
+      <canvas id="c" width="960" height="540" aria-label="Mini Dash Canvas"></canvas>
+      <div class="hud">
+        <div class="score" id="score">Score: 0 <small>(best <span id="best">0</span>)</small></div>
+        <div class="score topright" id="status">Ready</div>
+        <div class="help">Jump: <kbd>Space</kbd>/<kbd>W</kbd>/<kbd>↑</kbd> • Hold for higher jump • <kbd>P</kbd> to pause • Tap for mobile</div>
+      </div>
+
+      <!-- Start Overlay -->
+      <div class="overlay" id="startOverlay">
+        <div class="card">
+          <h1>Mini Dash</h1>
+          <p>Jump over spikes and survive. Earn points as you pass obstacles.</p>
+          <div class="btns">
+            <button id="playBtn">Play</button>
+            <button class="ghost" id="muteBtn">🔊 Sound</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Game Over Overlay -->
+      <div class="overlay" id="overOverlay" style="display:none">
+        <div class="card">
+          <h1>Game Over</h1>
+          <p id="finalScore">You scored 0.</p>
+          <div class="btns">
+            <button id="retryBtn">Restart</button>
+            <button class="ghost" id="shareBtn">Share</button>
+            <button class="danger" id="resetBestBtn">Reset Best</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+  // ===== Utility =====
+  const lerp = (a,b,t)=>a+(b-a)*t;
+  const clamp = (v, lo, hi)=>Math.max(lo, Math.min(hi, v));
+
+  // ===== Audio (simple) =====
+  const ctx = new (window.AudioContext || window.webkitAudioContext || function(){return {}})();
+  let muted = false;
+  function beep(freq=440, time=0.05, type='sine', gain=0.03){
+    if(!ctx.createOscillator || muted) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.value = gain; o.connect(g); g.connect(ctx.destination);
+    o.start(); o.stop(ctx.currentTime + time);
+  }
+
+  // ===== Game State =====
+  const canvas = document.getElementById('c');
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const ctx2d = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const statusEl = document.getElementById('status');
+  const startOverlay = document.getElementById('startOverlay');
+  const overOverlay = document.getElementById('overOverlay');
+  const finalScoreEl = document.getElementById('finalScore');
+  const playBtn = document.getElementById('playBtn');
+  const retryBtn = document.getElementById('retryBtn');
+  const shareBtn = document.getElementById('shareBtn');
+  const resetBestBtn = document.getElementById('resetBestBtn');
+  const muteBtn = document.getElementById('muteBtn');
+
+  let running = false, paused = false, gameOver = false;
+  let last = 0, acc = 0;
+  let score = 0, best = +localStorage.getItem('miniDashBest') || 0;
+  bestEl.textContent = best;
+
+  // World units relative to canvas height
+  let W = canvas.width, H = canvas.height;
+  function fit(){
+    const node = document.getElementById('game');
+    const rect = node.getBoundingClientRect();
+    const w = Math.round(rect.width * dpr);
+    const h = Math.round(rect.height * dpr);
+    if (w === W && h === H) return;
+    W = canvas.width = w; H = canvas.height = h;
+  }
+  addEventListener('resize', fit); fit();
+
+  // Ground & parallax
+  let time = 0;
+  const groundY = () => H * 0.8;
+
+  // Player (a cube)
+  const player = {
+    x: () => W * 0.18,
+    y: 0,
+    vy: 0,
+    size: () => Math.max(16, H*0.05),
+    onGround: false,
+    rot: 0,
+  };
+
+  // Obstacles (spikes)
+  const spikes = [];
+  function spawnSpike(){
+    const size = Math.max(16, H*0.05);
+    const width = size; // triangle base
+    const gap = lerp(size*3, size*1.6, Math.random());
+    // Choose either single or double spike sometimes
+    const count = Math.random() < 0.25 ? 2 : 1;
+    for(let i=0;i<count;i++){
+      spikes.push({
+        x: W + i*(width + size*0.5),
+        y: groundY(),
+        w: width,
+        h: size*1.1,
+        passed: false,
+      });
+    }
+  }
+
+  let speed = 5; // scaled by dpr & dt
+  let spawnTimer = 0;
+
+  function reset(){
+    score = 0; speed = 4.8; spawnTimer = 0; time = 0;
+    player.y = groundY() - player.size();
+    player.vy = 0; player.rot = 0; player.onGround = true;
+    spikes.length = 0; gameOver = false; paused = false; running = true;
+    statusEl.textContent = 'Running';
+    startOverlay.style.display = 'none';
+    overOverlay.style.display = 'none';
+  }
+
+  function end(){
+    gameOver = true; running = false;
+    statusEl.textContent = 'Stopped';
+    finalScoreEl.textContent = `You scored ${Math.floor(score)}.`;
+    if (score > best) { best = Math.floor(score); localStorage.setItem('miniDashBest', best); bestEl.textContent = best; }
+    overOverlay.style.display = 'grid';
+  }
+
+  function jump(power=1){
+    if (!running || paused) return;
+    const s = player.size();
+    if (player.onGround) {
+      player.vy = -s * (0.42 + 0.12*power);
+      player.onGround = false; beep(740, .06, 'square', .03);
+    }
+  }
+
+  function togglePause(){
+    if (!running || gameOver) return;
+    paused = !paused;
+    statusEl.textContent = paused ? 'Paused' : 'Running';
+    if (!paused) { last = performance.now(); req(); }
+  }
+
+  // Input
+  let jumpHold = false; let holdTime = 0;
+  addEventListener('keydown', (e)=>{
+    if(['Space','KeyW','ArrowUp'].includes(e.code)){ e.preventDefault(); jumpHold = true; }
+    if(e.code==='KeyP') togglePause();
+  });
+  addEventListener('keyup', (e)=>{
+    if(['Space','KeyW','ArrowUp'].includes(e.code)){ e.preventDefault(); jumpHold = false; holdTime = 0; }
+  });
+  canvas.addEventListener('pointerdown', ()=>{ jumpHold = true; });
+  addEventListener('pointerup', ()=>{ jumpHold = false; holdTime = 0; });
+
+  playBtn.onclick = ()=>{ if(ctx.resume) ctx.resume(); reset(); };
+  retryBtn.onclick = ()=>{ if(ctx.resume) ctx.resume(); reset(); };
+  shareBtn.onclick = ()=>{
+    const txt = `I scored ${Math.floor(score)} in Mini Dash!`;
+    if (navigator.share) navigator.share({ title: 'Mini Dash', text: txt, url: location.href}).catch(()=>{});
+    else navigator.clipboard.writeText(txt).then(()=>{ alert('Copied to clipboard!'); });
+  };
+  resetBestBtn.onclick = ()=>{ localStorage.removeItem('miniDashBest'); best=0; bestEl.textContent='0'; };
+  muteBtn.onclick = ()=>{ muted = !muted; muteBtn.textContent = muted? '🔇 Muted' : '🔊 Sound'; };
+
+  // ===== Loop =====
+  const STEP = 1000/60;
+  function req(){ requestAnimationFrame(loop); }
+  function loop(t){
+    if (!running) return;
+    fit();
+    if (paused) { req(); return; }
+    if (!last) last = t; const dt = t - last; last = t; acc += dt; time += dt/1000;
+    while(acc >= STEP){ update(STEP/1000); acc -= STEP; }
+    render();
+    req();
+  }
+
+  function update(dt){
+    // Hold-to-jump slightly stronger
+    if (jumpHold && !player.onGround){ holdTime += dt; if (holdTime < 0.18) player.vy -= player.size()*0.018; }
+
+    // Gravity & motion
+    const g = player.size() * 3.3;
+    player.vy += g * dt;
+    player.y += player.vy;
+
+    // Ground collision
+    const gy = groundY() - player.size();
+    if (player.y >= gy){ player.y = gy; player.vy = 0; if(!player.onGround){ player.onGround = true; beep(200,.03,'sine',.02);} }
+
+    // Speed ramp
+    speed = lerp(speed, 7.2, 0.0015);
+
+    // Spawn spikes
+    spawnTimer -= dt;
+    if (spawnTimer <= 0){
+      spawnSpike();
+      spawnTimer = lerp(1.1, 0.6, Math.min(1, time/60)) + Math.random()*0.25;
+    }
+
+    // Move spikes & scoring
+    for(let i=spikes.length-1;i>=0;i--){
+      const s = spikes[i]; s.x -= speed * (H/540) * 180 * dt;
+      if (!s.passed && s.x + s.w < player.x()){ s.passed = true; score += 1; beep(980,.04,'triangle',.02); }
+      if (s.x + s.w < -20) spikes.splice(i,1);
+    }
+
+    // Collisions (AABB against triangle approx with bounding box + slanted edge test)
+    const px = player.x(), py = player.y, ps = player.size();
+    for (const s of spikes){
+      // Quick AABB reject using bounding box of triangle
+      const triLeft = s.x, triRight = s.x + s.w, triTop = s.y - s.h, triBottom = s.y;
+      if (px+ps < triLeft || px > triRight || py+ps < triTop || py > triBottom) continue;
+      // Triangle edge (right-angled isosceles-ish). We'll model a centered isosceles with tip at (s.x + s.w*0.5, s.y - s.h)
+      // For simplicity, detect if player's bottom center is below triangle hypotenuse
+      const bx = px + ps*0.5; const by = py + ps; // bottom center
+      // Hypotenuse from (triLeft, triBottom) to (triRight, triBottom)
+      // Approx: line from (s.x, s.y) to (s.x + s.w*0.5, s.y - s.h) then to (s.x + s.w, s.y)
+      // We'll use the nearer half depending on bx
+      if (bx < s.x + s.w*0.5){
+        const x1=s.x, y1=s.y, x2=s.x + s.w*0.5, y2=s.y - s.h;
+        const m=(y2-y1)/(x2-x1); const yOnLine = m*(bx-x1)+y1; if (by >= yOnLine-2) { hit(); break; }
+      } else {
+        const x1=s.x + s.w*0.5, y1=s.y - s.h, x2=s.x + s.w, y2=s.y;
+        const m=(y2-y1)/(x2-x1); const yOnLine = m*(bx-x1)+y1; if (by >= yOnLine-2) { hit(); break; }
+      }
+    }
+
+    // Score label
+    scoreEl.innerHTML = `Score: ${Math.floor(score)} <small>(best <span id="best">${best}</span>)</small>`;
+  }
+
+  function hit(){
+    if (gameOver) return;
+    beep(120,.12,'sawtooth',.04); beep(80,.2,'square',.03);
+    end();
+  }
+
+  // ===== Render =====
+  function render(){
+    const ctx = ctx2d; ctx.clearRect(0,0,W,H);
+
+    // Parallax stars
+    for(let i=0;i<3;i++) drawStars(i);
+
+    // Ground
+    const gy = groundY();
+    ctx.fillStyle = '#0a0d20'; ctx.fillRect(0, gy, W, H-gy);
+    // Ground grid
+    ctx.globalAlpha = .12; ctx.strokeStyle = '#9aa2ff'; ctx.lineWidth = 1*dpr; ctx.beginPath();
+    const grid = Math.max(16, H*0.05);
+    for(let x=((time*40)%grid); x<W; x+=grid){ ctx.moveTo(x, gy); ctx.lineTo(x+30, H); }
+    ctx.stroke(); ctx.globalAlpha = 1;
+
+    // Player cube
+    const s = player.size(); const px = player.x(); const py = player.y;
+    player.rot = lerp(player.rot, player.onGround ? 0 : player.rot + 0.2, 0.2);
+    ctx.save(); ctx.translate(px + s/2, py + s/2); ctx.rotate(player.onGround?0:time*6);
+    const grd = ctx.createLinearGradient(-s/2,-s/2, s/2, s/2);
+    grd.addColorStop(0, '#24d3ee'); grd.addColorStop(1, '#7c5cff');
+    ctx.fillStyle = grd; ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 2*dpr;
+    roundRect(ctx, -s/2,-s/2, s, s, 6*dpr, true, true);
+    ctx.restore();
+
+    // Spikes
+    for(const sp of spikes){ drawSpike(sp); }
+
+    // Status
+    statusEl.textContent = gameOver ? 'Game Over' : (paused ? 'Paused' : 'Running');
+  }
+
+  function drawStars(layer){
+    const ctx = ctx2d; const n = 40 + layer*30; const speedMul = [0.2, 0.4, 0.7][layer];
+    ctx.globalAlpha = [.5,.35,.2][layer];
+    for(let i=0;i<n;i++){
+      const t = (time*speedMul + i*0.013) % 1;
+      const x = W*(1-t);
+      const y = (i*9973 % 1) * H * 0.7;
+      const size = (layer+1) * dpr;
+      ctx.fillStyle = i%5? '#b9c0ff' : '#7c5cff';
+      ctx.fillRect(x, y*0.8 + 30, size, size);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawSpike(s){
+    const ctx = ctx2d;
+    const baseY = s.y; const tipX = s.x + s.w*0.5; const tipY = s.y - s.h;
+    ctx.beginPath(); ctx.moveTo(s.x, baseY); ctx.lineTo(tipX, tipY); ctx.lineTo(s.x + s.w, baseY); ctx.closePath();
+    const g = ctx.createLinearGradient(s.x, tipY, s.x, baseY);
+    g.addColorStop(0, '#ff7aa8'); g.addColorStop(1, '#ff477e');
+    ctx.fillStyle = g; ctx.fill();
+    ctx.lineWidth = 2*dpr; ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.stroke();
+  }
+
+  function roundRect(ctx, x, y, w, h, r, fill, stroke){
+    if (r > w/2) r = w/2; if (r > h/2) r = h/2;
+    ctx.beginPath();
+    ctx.moveTo(x+r, y);
+    ctx.arcTo(x+w, y, x+w, y+h, r);
+    ctx.arcTo(x+w, y+h, x, y+h, r);
+    ctx.arcTo(x, y+h, x, y, r);
+    ctx.arcTo(x, y, x+w, y, r);
+    ctx.closePath();
+    if (fill) ctx.fill(); if (stroke) ctx.stroke();
+  }
+
+  // Auto-show start screen
+  startOverlay.style.display = 'grid';
+  statusEl.textContent = 'Ready';
+  </script>
+</body>
+</html>
